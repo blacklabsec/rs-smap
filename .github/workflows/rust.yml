@@ -166,7 +166,6 @@ jobs:
   build:
     name: Build Release
     runs-on: ${{ matrix.os }}
-    if: github.event_name == 'release'
     strategy:
       matrix:
         include:
@@ -222,7 +221,15 @@ jobs:
           7z a smap-${{ matrix.name }}.zip smap.exe
           move smap-${{ matrix.name }}.zip ../../..
 
+      - name: Upload build artifacts
+        if: github.event_name != 'release'
+        uses: actions/upload-artifact@v4
+        with:
+          name: smap-${{ matrix.name }}
+          path: ./smap-${{ matrix.name }}.${{ runner.os == 'Windows' && 'zip' || 'tar.gz' }}
+
       - name: Upload Release Asset
+        if: github.event_name == 'release'
         uses: actions/upload-release-asset@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
