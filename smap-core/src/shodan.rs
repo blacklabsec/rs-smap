@@ -81,6 +81,17 @@ struct ApiErrorResponse {
     error: String,
 }
 
+impl ApiErrorResponse {
+    /// Determines if this error is a rate limiting error
+    fn is_rate_limit(&self) -> bool {
+        let error_lower = self.error.to_lowercase();
+        error_lower.contains("rate limit")
+            || error_lower.contains("too many requests")
+            || error_lower.contains("quota exceeded")
+            || error_lower.contains("throttle")
+    }
+}
+
 impl ShodanClient {
     /// Creates a new Shodan InternetDB client with default settings
     ///
@@ -187,27 +198,29 @@ impl ShodanClient {
         let url = format!("{}/{}", INTERNETDB_API_BASE, ip);
 
         let mut last_error = None;
+        let mut retry_after_secs: Option<u64> = None;
 
         for attempt in 0..self.retry_attempts {
             if attempt > 0 {
-                // Exponential backoff: delay * 2^(attempt-1)
-                let backoff_multiplier = 1u32.checked_shl(attempt - 1).unwrap_or(8);
-                let delay = self.retry_delay.saturating_mul(backoff_multiplier);
+                // Use Retry-After if available, otherwise use exponential backoff
+                let delay = if let Some(retry_secs) = retry_after_secs.take() {
+                    // Use the Retry-After header value with a small buffer
+                    Duration::from_secs(retry_secs + 1)
+                } else {
+                    // Exponential backoff: delay * 2^(attempt-1)
+                    let backoff_multiplier = 1u32.checked_shl(attempt - 1).unwrap_or(8);
+                    self.retry_delay.saturating_mul(backoff_multiplier)
+                };
                 sleep(delay).await;
             }
 
             match self.query_once(&url).await {
                 Ok(response) => return Ok(response),
                 Err(e) => {
-                    // Check if we should respect a Retry-After delay for rate limiting
-                    if let Error::ShodanApi(ref msg) = e {
-                        if msg.starts_with("Rate limit exceeded") {
-                            // If there's a retry-after duration in the error message, use it
-                            // For now, we'll add a longer delay for rate limits
-                            if attempt + 1 < self.retry_attempts {
-                                sleep(Duration::from_secs(5)).await;
-                            }
-                        }
+                    // Check if we should store a Retry-After delay for rate limiting
+                    if let Error::ShodanApiRateLimit(ref _msg, retry_secs) = e {
+                        // Store retry_after for next attempt (will be used at top of loop)
+                        retry_after_secs = retry_secs;
                     }
                     last_error = Some(e);
                 }
@@ -222,12 +235,36 @@ impl ShodanClient {
         let response = self.client.get(url).send().await?;
 
         let status = response.status();
+        
+        // Extract Retry-After header if present
+        let retry_after_secs = response
+            .headers()
+            .get("retry-after")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|s| s.parse::<u64>().ok());
 
         // Handle different HTTP status codes
         match status {
             StatusCode::OK => {
-                // Success - parse the response
-                let data = response.json::<InternetDbResponse>().await?;
+                // Success - but still check for error in JSON body
+                // First try to parse as an error response
+                let body_text = response.text().await?;
+                
+                // Try to parse as error first
+                if let Ok(error_response) = serde_json::from_str::<ApiErrorResponse>(&body_text) {
+                    // Check if this is a rate limit error
+                    if error_response.is_rate_limit() {
+                        return Err(Error::ShodanApiRateLimit(
+                            error_response.error,
+                            retry_after_secs,
+                        ));
+                    } else {
+                        return Err(Error::ShodanApi(error_response.error));
+                    }
+                }
+                
+                // Not an error, parse as normal response
+                let data = serde_json::from_str::<InternetDbResponse>(&body_text)?;
                 Ok(data)
             }
             StatusCode::NOT_FOUND => {
@@ -241,28 +278,45 @@ impl ShodanClient {
                 })
             }
             StatusCode::TOO_MANY_REQUESTS => {
-                // Check for Retry-After header
-                let retry_after = response
-                    .headers()
-                    .get("retry-after")
-                    .and_then(|v| v.to_str().ok())
-                    .and_then(|s| s.parse::<u64>().ok())
+                // Rate limiting at HTTP status level
+                let error_msg = retry_after_secs
                     .map(|secs| format!("Rate limit exceeded (retry after {} seconds)", secs))
                     .unwrap_or_else(|| "Rate limit exceeded".into());
-                Err(Error::ShodanApi(retry_after))
+                Err(Error::ShodanApiRateLimit(error_msg, retry_after_secs))
             }
             StatusCode::BAD_REQUEST => {
                 // Try to parse error message
                 if let Ok(error_response) = response.json::<ApiErrorResponse>().await {
-                    Err(Error::ShodanApi(error_response.error))
+                    if error_response.is_rate_limit() {
+                        Err(Error::ShodanApiRateLimit(
+                            error_response.error,
+                            retry_after_secs,
+                        ))
+                    } else {
+                        Err(Error::ShodanApi(error_response.error))
+                    }
                 } else {
                     Err(Error::ShodanApi("Bad request".into()))
                 }
             }
-            _ => Err(Error::ShodanApi(format!(
-                "API request failed with status: {}",
-                status
-            ))),
+            _ => {
+                // Try to get error message from response body
+                if let Ok(error_response) = response.json::<ApiErrorResponse>().await {
+                    if error_response.is_rate_limit() {
+                        Err(Error::ShodanApiRateLimit(
+                            error_response.error,
+                            retry_after_secs,
+                        ))
+                    } else {
+                        Err(Error::ShodanApi(error_response.error))
+                    }
+                } else {
+                    Err(Error::ShodanApi(format!(
+                        "API request failed with status: {}",
+                        status
+                    )))
+                }
+            }
         }
     }
 

@@ -38,6 +38,10 @@ pub enum Error {
     #[error("Shodan API error: {0}")]
     ShodanApi(String),
 
+    /// Shodan API rate limit error with optional retry-after seconds
+    #[error("Shodan API rate limit: {0}")]
+    ShodanApiRateLimit(String, Option<u64>),
+
     /// Database error
     #[error("Database error: {0}")]
     Database(String),
@@ -102,6 +106,18 @@ mod tests {
     fn test_shodan_api_error() {
         let err = Error::ShodanApi("rate limited".to_string());
         assert_eq!(err.to_string(), "Shodan API error: rate limited");
+    }
+
+    #[test]
+    fn test_shodan_api_rate_limit_error() {
+        let err = Error::ShodanApiRateLimit("Too many requests".to_string(), Some(60));
+        assert_eq!(err.to_string(), "Shodan API rate limit: Too many requests");
+    }
+
+    #[test]
+    fn test_shodan_api_rate_limit_error_no_retry() {
+        let err = Error::ShodanApiRateLimit("Rate limit exceeded".to_string(), None);
+        assert_eq!(err.to_string(), "Shodan API rate limit: Rate limit exceeded");
     }
 
     #[test]
