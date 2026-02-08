@@ -1,0 +1,35 @@
+[package]
+name = "smap-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+tokio = { workspace = true }
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+cidr = { workspace = true }
+publicsuffix = { workspace = true }
+chrono = { workspace = true }
+futures = { workspace = true }
+once_cell = { workspace = true }
+
+[dev-dependencies]
+criterion = { workspace = true }
+tempfile = "3.10"
+
+[[bench]]
+name = "database_bench"
+harness = false
+
+[[bench]]
+name = "correlation_bench"
+harness = false
+
+[features]
+default = []
+benchmarks = []
