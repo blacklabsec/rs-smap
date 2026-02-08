@@ -43,7 +43,15 @@ cargo build --release
 The binary will be available at `target/release/smap`.
 
 ### Pre-built Binaries
-You can download a pre-built binary from [here](https://github.com/blacklabsec/rs-smap/releases) and use it right away.
+
+**Release Binaries:**
+Download the latest stable release from [GitHub Releases](https://github.com/blacklabsec/rs-smap/releases).
+
+**Development Builds:**
+Development builds are automatically created for every push and pull request. You can download them from the [GitHub Actions](https://github.com/blacklabsec/rs-smap/actions) artifacts section. Available platforms:
+- Linux (x86_64, x86_64-musl)
+- macOS (x86_64, aarch64/ARM64)
+- Windows (x86_64)
 
 ### Cargo
 _Note: Publishing to crates.io is planned for a future release._
