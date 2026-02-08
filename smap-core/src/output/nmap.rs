@@ -1,8 +1,6 @@
 //! Nmap-compatible text output format
 
-use crate::output::common::{
-    format_time, get_command, pad_right, OutputWriter, TimeFormat,
-};
+use crate::output::common::{format_time, get_command, pad_right, OutputWriter, TimeFormat};
 use crate::types::{Protocol, ScanResult};
 use std::io;
 use std::time::SystemTime;
