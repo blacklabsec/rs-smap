@@ -376,7 +376,10 @@ async fn scan_targets(
             // Query Shodan
             let response = match client.query(ip).await {
                 Ok(resp) => resp,
-                Err(_) => {
+                Err(e) => {
+                    if verbose {
+                        eprintln!("Failed to query {}: {}", ip, e);
+                    }
                     scanned.fetch_add(1, Ordering::SeqCst);
                     // Send empty result for progress tracking
                     let empty_result = ScanResult {
