@@ -1,0 +1,21 @@
+[package]
+name = "smap-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "smap"
+path = "src/main.rs"
+
+[dependencies]
+smap-core = { path = "../smap-core" }
+clap = { workspace = true }
+tokio = { workspace = true }
+anyhow = { workspace = true }
+serde_json = { workspace = true }
+ctrlc = "3.4"
+chrono = "0.4"
+indicatif = "0.18.3"
