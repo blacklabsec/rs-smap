@@ -33,7 +33,6 @@ use serde::{Deserialize, Serialize};
 use std::net::IpAddr;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use std::sync::Arc;
-use std::sync::atomic::AtomicU64;
 use tokio::time::sleep;
 
 const INTERNETDB_API_BASE: &str = "https://internetdb.shodan.io";
@@ -49,6 +48,17 @@ pub struct ShodanClient {
     client: Client,
     retry_attempts: u32,
     retry_delay: Duration,
+    /// Global retry deadline (ms since epoch) set when a 429 is observed.
+    /// This prevents concurrent tasks from hammering the API while in backoff.
+    ///
+    /// Note on synchronization: this is an `AtomicU64` shared via `Arc`.
+    /// Methods read and update it using `Ordering::SeqCst` to ensure
+    /// immediate visibility across threads. This provides a simple global
+    /// coordination mechanism for backoff without additional locking.
+    global_retry_deadline: Arc<std::sync::atomic::AtomicU64>,
+    /// Per-second request counter to add spacing when over threshold
+    last_request_second: Arc<std::sync::atomic::AtomicU64>,
+    requests_this_second: Arc<std::sync::atomic::AtomicUsize>,
 }
 
 /// Response from the InternetDB API for an IP address
@@ -114,6 +124,9 @@ impl ShodanClient {
             client,
             retry_attempts: DEFAULT_RETRY_ATTEMPTS,
             retry_delay: Duration::from_millis(DEFAULT_RETRY_DELAY_MS),
+            global_retry_deadline: Arc::new(std::sync::atomic::AtomicU64::new(0u64)),
+            last_request_second: Arc::new(std::sync::atomic::AtomicU64::new(0u64)),
+            requests_this_second: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         })
     }
 
@@ -135,6 +148,9 @@ impl ShodanClient {
             client,
             retry_attempts: DEFAULT_RETRY_ATTEMPTS,
             retry_delay: Duration::from_millis(DEFAULT_RETRY_DELAY_MS),
+            global_retry_deadline: Arc::new(std::sync::atomic::AtomicU64::new(0u64)),
+            last_request_second: Arc::new(std::sync::atomic::AtomicU64::new(0u64)),
+            requests_this_second: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         })
     }
 
@@ -163,6 +179,9 @@ impl ShodanClient {
             client,
             retry_attempts,
             retry_delay,
+            global_retry_deadline: Arc::new(std::sync::atomic::AtomicU64::new(0u64)),
+            last_request_second: Arc::new(std::sync::atomic::AtomicU64::new(0u64)),
+            requests_this_second: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         })
     }
 
@@ -212,9 +231,11 @@ impl ShodanClient {
         let mut retry_after_secs: Option<u64> = None;
 
         for attempt in 0..self.retry_attempts {
+            // Before attempting a new request, respect any global retry deadline
+            // set when earlier requests observed a 429.
             if attempt > 0 {
                 // Use Retry-After if available, otherwise use exponential backoff
-                let delay = if let Some(retry_secs) = retry_after_secs.take() {
+                let mut delay = if let Some(retry_secs) = retry_after_secs.take() {
                     // Use the Retry-After header value with a small buffer
                     Duration::from_secs((retry_secs + 1) as u64)
                 } else {
@@ -223,7 +244,13 @@ impl ShodanClient {
                     self.retry_delay.saturating_mul(backoff_multiplier)
                 };
 
-                // Compute and publish a retry deadline so callers can show an accurate countdown
+                // Cap delay to 10 minutes
+                let max_delay = Duration::from_secs(600);
+                if delay > max_delay {
+                    delay = max_delay;
+                }
+
+                // Publish a retry deadline so callers can show an accurate countdown
                 if let Some(ref rd) = retry_deadline_ms {
                     let now_ms = SystemTime::now()
                         .duration_since(UNIX_EPOCH)
@@ -233,7 +260,53 @@ impl ShodanClient {
                     rd.store(now_ms.saturating_add(delay_ms), std::sync::atomic::Ordering::SeqCst);
                 }
 
+                // Also set a global retry deadline to prevent other concurrent tasks
+                let now_ms = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap()
+                    .as_millis() as u64;
+                self.global_retry_deadline
+                    .store(now_ms.saturating_add(delay.as_millis() as u64), std::sync::atomic::Ordering::SeqCst);
+
+                // Sleep until the deadline before retrying
                 sleep(delay).await;
+            } else {
+                // If there's an existing global retry deadline in the future, wait for it
+                let now_ms = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap()
+                    .as_millis() as u64;
+                let global_deadline = self.global_retry_deadline.load(std::sync::atomic::Ordering::SeqCst);
+                if global_deadline > now_ms {
+                    let wait_ms = global_deadline.saturating_sub(now_ms);
+                    sleep(Duration::from_millis(wait_ms)).await;
+                }
+            }
+
+            // Throttle if too many requests in the same second (more than 25)
+            let now_ms = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_millis() as u64;
+            let now_sec = now_ms / 1000;
+            let prev_sec = self
+                .last_request_second
+                .load(std::sync::atomic::Ordering::SeqCst);
+            if prev_sec != now_sec {
+                // Attempt to set the new second; reset counter if successful
+                let _ = self.last_request_second.compare_exchange(
+                    prev_sec,
+                    now_sec,
+                    std::sync::atomic::Ordering::SeqCst,
+                    std::sync::atomic::Ordering::SeqCst,
+                );
+                self.requests_this_second.store(1, std::sync::atomic::Ordering::SeqCst);
+            } else {
+                let cnt = self.requests_this_second.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+                if cnt > 25 {
+                    // Add an extra second between requests when over threshold
+                    tokio::time::sleep(Duration::from_secs(1)).await;
+                }
             }
 
             match self.query_once(&url).await {
@@ -242,6 +315,9 @@ impl ShodanClient {
                     if let Some(ref rd) = retry_deadline_ms {
                         rd.store(0u64, std::sync::atomic::Ordering::SeqCst);
                     }
+                    // Clear global deadline as well
+                    self.global_retry_deadline
+                        .store(0u64, std::sync::atomic::Ordering::SeqCst);
                     return Ok(response);
                 }
                 Err(e) => {
@@ -251,7 +327,7 @@ impl ShodanClient {
                         // If server provided a Retry-After we use it; otherwise fall back
                         // to our configured retry_delay so callers can show an immediate
                         // "rate-limited" countdown.
-                        if let Some(retry_secs_val) = retry_secs {
+                        let secs: u64 = if let Some(retry_secs_val) = retry_secs {
                             retry_after_secs = Some(retry_secs_val);
                             let deadline: u64 = SystemTime::now()
                                 .duration_since(UNIX_EPOCH)
@@ -261,6 +337,10 @@ impl ShodanClient {
                             if let Some(ref rd) = retry_deadline_ms {
                                 rd.store(deadline, std::sync::atomic::Ordering::SeqCst);
                             }
+                            // also set global deadline
+                            self.global_retry_deadline
+                                .store(deadline, std::sync::atomic::Ordering::SeqCst);
+                            retry_secs_val as u64
                         } else {
                             // No Retry-After header: use default retry delay as an immediate
                             // deadline so the UI shows rate-limited now.
@@ -274,7 +354,13 @@ impl ShodanClient {
                             if let Some(ref rd) = retry_deadline_ms {
                                 rd.store(deadline, std::sync::atomic::Ordering::SeqCst);
                             }
-                        }
+                            // set global deadline
+                            self.global_retry_deadline
+                                .store(deadline, std::sync::atomic::Ordering::SeqCst);
+                            fallback_secs
+                        };
+                        // Unconditional visible log so users see it immediately (no -v required)
+                        eprintln!("Rate limited by Shodan: retry in {}s", secs);
                     }
                     last_error = Some(e);
                 }

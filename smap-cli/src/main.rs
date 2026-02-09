@@ -192,7 +192,6 @@ async fn run(running: Arc<AtomicUsize>, abort_handle: Arc<Mutex<Option<tokio::ta
         let rd = Arc::clone(&retry_deadline);
         let done = Arc::clone(&monitor_done);
         let pb_clone = Arc::clone(pb);
-        let total = total_targets;
         tokio::spawn(async move {
             const THRESH_MS: u64 = 5_000; // 5 seconds
             loop {
