@@ -153,6 +153,7 @@ async fn run(running: Arc<AtomicUsize>, abort_handle: Arc<Mutex<Option<tokio::ta
             .unwrap()
             .as_millis() as u64,
     ));
+    let retry_deadline = Arc::new(AtomicU64::new(0u64));
     let monitor_done = Arc::new(AtomicBool::new(false));
 
     // Create fancy progress bar when requested
@@ -179,6 +180,7 @@ async fn run(running: Arc<AtomicUsize>, abort_handle: Arc<Mutex<Option<tokio::ta
         args.verbose,
         running,
         tx,
+        Arc::clone(&retry_deadline),
     ));
 
     *abort_handle.lock().unwrap() = Some(scan_handle.abort_handle());
@@ -187,6 +189,7 @@ async fn run(running: Arc<AtomicUsize>, abort_handle: Arc<Mutex<Option<tokio::ta
     if let Some(ref pb) = progress_bar {
         let pc = Arc::clone(&processed_count);
         let lp = Arc::clone(&last_progress);
+        let rd = Arc::clone(&retry_deadline);
         let done = Arc::clone(&monitor_done);
         let pb_clone = Arc::clone(pb);
         let total = total_targets;
@@ -204,14 +207,20 @@ async fn run(running: Arc<AtomicUsize>, abort_handle: Arc<Mutex<Option<tokio::ta
                 let elapsed = now_ms.saturating_sub(last);
                 let processed = pc.load(Ordering::SeqCst);
 
-                if elapsed >= THRESH_MS {
+                let rd_val = rd.load(Ordering::SeqCst);
+                if rd_val > now_ms {
+                    // Show exact retry countdown if available
+                    let secs_left = ((rd_val.saturating_sub(now_ms)) + 999) / 1000; // ceil
+                    pb_clone.set_message(format!("rate-limited: retry in {}s...", secs_left));
+                    pb_clone.set_position(processed as u64);
+                } else if elapsed >= THRESH_MS {
                     pb_clone.set_message(format!("waiting: {}s...", elapsed / 1000));
+                    pb_clone.set_position(processed as u64);
                 } else {
                     pb_clone.set_message("");
+                    pb_clone.set_position(processed as u64);
                 }
 
-                // ensure position is accurate even if monitor runs between updates
-                pb_clone.set_position(processed as u64);
                 tokio::time::sleep(Duration::from_secs(1)).await;
             }
         });
@@ -407,6 +416,7 @@ async fn scan_targets(
     verbose: bool,
     running: Arc<AtomicUsize>,
     tx: mpsc::Sender<ScanResult>,
+    retry_deadline: Arc<AtomicU64>,
 ) -> anyhow::Result<()> {
     let total = targets.len();
     let scanned = Arc::new(AtomicUsize::new(0));
@@ -430,6 +440,7 @@ async fn scan_targets(
         let semaphore = Arc::clone(&semaphore);
         let running = Arc::clone(&running);
         let tx = tx.clone();
+        let rd = Arc::clone(&retry_deadline);
 
         let task = tokio::spawn(async move {
             // Acquire semaphore permit
@@ -443,13 +454,27 @@ async fn scan_targets(
             // Rate limiting delay
             sleep(Duration::from_millis(RATE_LIMIT_DELAY_MS)).await;
 
-            // Query Shodan
-            let response = match client.query(ip).await {
+            // Query Shodan (notify retry_deadline so we can show countdown)
+            let response = match client
+                .query_with_retry_notifier(ip, Some(Arc::clone(&rd)))
+                .await
+            {
                 Ok(resp) => resp,
                 Err(e) => {
                     if verbose {
                         eprintln!("Failed to query {}: {}", ip, e);
                     }
+                    // If this was a final rate-limit with a known deadline, leave the
+                    // retry deadline set so the monitor can show it; otherwise clear it.
+                    match e {
+                        smap_core::error::Error::ShodanApiRateLimit(_, Some(_)) => {
+                            // keep deadline (it should already be set by notifier)
+                        }
+                        _ => {
+                            rd.store(0u64, Ordering::SeqCst);
+                        }
+                    }
+
                     scanned.fetch_add(1, Ordering::SeqCst);
                     // Send empty result for progress tracking
                     let empty_result = ScanResult {
