@@ -112,22 +112,20 @@ async fn run(running: Arc<AtomicUsize>, abort_handle: Arc<Mutex<Option<tokio::ta
         return Ok(());
     }
 
-    // Print scan header if verbose
-    if args.verbose {
+    // Print scan header
+    println!(
+        "Starting Smap {} at {}",
+        env!("CARGO_PKG_VERSION"),
+        format_time(scan_start_time)
+    );
+    if filtered_count > 0 {
         println!(
-            "Starting Smap {} at {}",
-            env!("CARGO_PKG_VERSION"),
-            format_time(scan_start_time)
+            "Filtered {} private/reserved IP(s), scanning {} hosts",
+            filtered_count,
+            filtered_ips.len()
         );
-        if filtered_count > 0 {
-            println!(
-                "Filtered {} private/reserved IP(s), scanning {} hosts",
-                filtered_count,
-                filtered_ips.len()
-            );
-        } else {
-            println!("Scanning {} hosts", filtered_ips.len());
-        }
+    } else {
+        println!("Scanning {} hosts", filtered_ips.len());
     }
 
     // Parse port filter if specified

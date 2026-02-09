@@ -878,3 +878,5 @@ Host: 129.176.0.27 ()    Status: Up
 Host: 129.176.4.84 ()    Status: Up
 Host: 129.176.3.60 ()    Status: Up
 # Nmap 9.99 scan initiated Sun Feb 08 23:02:15 2026 as: smap target/debug/smap -iL targets.txt -oA test --bar -v
+# Nmap 9.99 scan initiated Sun Feb 08 23:04:20 2026 as: smap target/debug/smap -iL targets.txt -oA test --bar -v
+# Nmap 9.99 scan initiated Sun Feb 08 23:04:35 2026 as: smap target/debug/smap -iL targets.txt -oA test --bar

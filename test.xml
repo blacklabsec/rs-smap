@@ -22637,3 +22637,19 @@
 <scaninfo type="connect" protocol="tcp" numservices="0" services=""/>
 <verbose level="0"/>
 <debugging level="0"/>
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE nmaprun>
+<?xml-stylesheet href="file:///usr/bin/../share/nmap/nmap.xsl" type="text/xsl"?>
+<!-- Nmap 9.99 scan initiated Sun Feb 08 23:04:20 2026 as: smap target/debug/smap -iL targets.txt -oA test --bar -v -->
+<nmaprun scanner="nmap" args="smap target/debug/smap -iL targets.txt -oA test --bar -v" start="1770613460" startstr="Sun Feb 08 23:04:20 2026" version="9.99" xmloutputversion="1.04">
+<scaninfo type="connect" protocol="tcp" numservices="0" services=""/>
+<verbose level="0"/>
+<debugging level="0"/>
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE nmaprun>
+<?xml-stylesheet href="file:///usr/bin/../share/nmap/nmap.xsl" type="text/xsl"?>
+<!-- Nmap 9.99 scan initiated Sun Feb 08 23:04:35 2026 as: smap target/debug/smap -iL targets.txt -oA test --bar -->
+<nmaprun scanner="nmap" args="smap target/debug/smap -iL targets.txt -oA test --bar" start="1770613475" startstr="Sun Feb 08 23:04:35 2026" version="9.99" xmloutputversion="1.04">
+<scaninfo type="connect" protocol="tcp" numservices="0" services=""/>
+<verbose level="0"/>
+<debugging level="0"/>
