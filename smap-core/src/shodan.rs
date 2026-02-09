@@ -48,6 +48,8 @@ pub struct ShodanClient {
     client: Client,
     retry_attempts: u32,
     retry_delay: Duration,
+    /// Base URL for the InternetDB API. Configurable primarily for tests.
+    base_url: String,
     /// Global retry deadline (ms since epoch) set when a 429 is observed.
     /// This prevents concurrent tasks from hammering the API while in backoff.
     ///
@@ -123,8 +125,7 @@ impl ShodanClient {
         Ok(Self {
             client,
             retry_attempts: DEFAULT_RETRY_ATTEMPTS,
-            retry_delay: Duration::from_millis(DEFAULT_RETRY_DELAY_MS),
-            global_retry_deadline: Arc::new(std::sync::atomic::AtomicU64::new(0u64)),
+            retry_delay: Duration::from_millis(DEFAULT_RETRY_DELAY_MS),            base_url: INTERNETDB_API_BASE.to_string(),            global_retry_deadline: Arc::new(std::sync::atomic::AtomicU64::new(0u64)),
             last_request_second: Arc::new(std::sync::atomic::AtomicU64::new(0u64)),
             requests_this_second: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         })
@@ -148,6 +149,7 @@ impl ShodanClient {
             client,
             retry_attempts: DEFAULT_RETRY_ATTEMPTS,
             retry_delay: Duration::from_millis(DEFAULT_RETRY_DELAY_MS),
+            base_url: INTERNETDB_API_BASE.to_string(),
             global_retry_deadline: Arc::new(std::sync::atomic::AtomicU64::new(0u64)),
             last_request_second: Arc::new(std::sync::atomic::AtomicU64::new(0u64)),
             requests_this_second: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
@@ -179,6 +181,24 @@ impl ShodanClient {
             client,
             retry_attempts,
             retry_delay,
+            base_url: INTERNETDB_API_BASE.to_string(),
+            global_retry_deadline: Arc::new(std::sync::atomic::AtomicU64::new(0u64)),
+            last_request_second: Arc::new(std::sync::atomic::AtomicU64::new(0u64)),
+            requests_this_second: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        })
+    }
+
+    /// Create a client using a specific base URL (useful for testing)
+    pub fn with_base_url(base: &str) -> Result<Self> {
+        let client = Client::builder()
+            .timeout(Duration::from_secs(DEFAULT_TIMEOUT_SECS))
+            .build()?;
+
+        Ok(Self {
+            client,
+            retry_attempts: DEFAULT_RETRY_ATTEMPTS,
+            retry_delay: Duration::from_millis(DEFAULT_RETRY_DELAY_MS),
+            base_url: base.to_string(),
             global_retry_deadline: Arc::new(std::sync::atomic::AtomicU64::new(0u64)),
             last_request_second: Arc::new(std::sync::atomic::AtomicU64::new(0u64)),
             requests_this_second: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
@@ -225,7 +245,7 @@ impl ShodanClient {
         ip: IpAddr,
         retry_deadline_ms: Option<Arc<std::sync::atomic::AtomicU64>>,
     ) -> Result<InternetDbResponse> {
-        let url = format!("{}/{}", INTERNETDB_API_BASE, ip);
+        let url = format!("{}/{}", self.base_url, ip);
 
         let mut last_error = None;
         let mut retry_after_secs: Option<u64> = None;
@@ -735,6 +755,47 @@ mod tests {
             let deserialized: InternetDbResponse = serde_json::from_str(&json).unwrap();
 
             assert_eq!(original, deserialized);
+        }
+
+        #[tokio::test]
+        async fn test_rate_limit_sets_global_deadline() {
+            use std::sync::atomic::AtomicU64;
+
+            // Start mock server and stub a 429 response with Retry-After: 2
+            let _m = mockito::mock("GET", "/1.2.3.4")
+                .with_status(429)
+                .with_header("retry-after", "2")
+                .with_header("content-type", "application/json")
+                .with_body(r#"{"error":"Rate limit exceeded"}"#)
+                .create();
+
+            let mut client = ShodanClient::with_retry(1, Duration::from_millis(1)).unwrap();
+            // Point client to mock server
+            client.base_url = mockito::server_url();
+
+            let rd = Arc::new(AtomicU64::new(0));
+            let ip: IpAddr = "1.2.3.4".parse().unwrap();
+
+            let res = client.query_with_retry_notifier(ip, Some(Arc::clone(&rd))).await;
+
+            // We expect the query to fail with a rate limit error
+            assert!(res.is_err());
+            if let Err(err) = res {
+                match err {
+                    Error::ShodanApiRateLimit(_, retry_opt) => {
+                        // The error should carry the Retry-After value
+                        assert_eq!(retry_opt, Some(2));
+                    }
+                    _ => panic!("expected ShodanApiRateLimit error"),
+                }
+            }
+
+            // After giving up, the notifier should be cleared (0), but the global
+            // deadline should still be set to a future value.
+            assert_eq!(rd.load(std::sync::atomic::Ordering::SeqCst), 0);
+            let global = client.global_retry_deadline.load(std::sync::atomic::Ordering::SeqCst);
+            let now_ms = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as u64;
+            assert!(global > now_ms, "global deadline should be in the future");
         }
     }
 }
