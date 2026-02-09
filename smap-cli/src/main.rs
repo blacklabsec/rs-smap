@@ -155,6 +155,22 @@ async fn run(running: Arc<AtomicUsize>, abort_handle: Arc<Mutex<Option<tokio::ta
     ));
     let monitor_done = Arc::new(AtomicBool::new(false));
 
+    // Create fancy progress bar when requested
+    let progress_bar = if args.bar {
+        use indicatif::{ProgressBar, ProgressStyle, ProgressDrawTarget};
+        let pb = ProgressBar::new(total_targets as u64);
+        pb.set_style(
+            ProgressStyle::default_bar()
+                .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({eta})")
+                .unwrap()
+                .progress_chars("#>-"),
+        );
+        pb.set_draw_target(ProgressDrawTarget::stdout());
+        Some(Arc::new(pb))
+    } else {
+        None
+    };
+
     // Spawn scanning task
     let scan_handle = tokio::spawn(scan_targets(
         filtered_ips,
@@ -167,11 +183,12 @@ async fn run(running: Arc<AtomicUsize>, abort_handle: Arc<Mutex<Option<tokio::ta
 
     *abort_handle.lock().unwrap() = Some(scan_handle.abort_handle());
 
-    // Spawn monitor task that prints stall/waiting info every second when --bar
-    if args.bar {
+    // Spawn monitor task that updates the progress bar message every second when --bar
+    if let Some(ref pb) = progress_bar {
         let pc = Arc::clone(&processed_count);
         let lp = Arc::clone(&last_progress);
         let done = Arc::clone(&monitor_done);
+        let pb_clone = Arc::clone(pb);
         let total = total_targets;
         tokio::spawn(async move {
             const THRESH_MS: u64 = 5_000; // 5 seconds
@@ -188,16 +205,13 @@ async fn run(running: Arc<AtomicUsize>, abort_handle: Arc<Mutex<Option<tokio::ta
                 let processed = pc.load(Ordering::SeqCst);
 
                 if elapsed >= THRESH_MS {
-                    eprint!(
-                        "\rProcessed: {}/{} - waiting: {}s...",
-                        processed,
-                        total,
-                        elapsed / 1000
-                    );
+                    pb_clone.set_message(format!("waiting: {}s...", elapsed / 1000));
                 } else {
-                    eprint!("\rProcessed: {}/{}        ", processed, total);
+                    pb_clone.set_message("");
                 }
-                let _ = std::io::stderr().flush();
+
+                // ensure position is accurate even if monitor runs between updates
+                pb_clone.set_position(processed as u64);
                 tokio::time::sleep(Duration::from_secs(1)).await;
             }
         });
@@ -223,8 +237,12 @@ async fn run(running: Arc<AtomicUsize>, abort_handle: Arc<Mutex<Option<tokio::ta
         let result_time = SystemTime::now();
         formatters.write_result(&result, result_time)?;
 
-        if args.bar {
-            // Also print a short status to stdout for compatibility
+        if let Some(ref pb) = progress_bar {
+            pb.inc(1);
+            // Clear any waiting message on new progress
+            pb.set_message("");
+        } else if args.bar {
+            // Fallback to simple text output if for some reason pb was not created
             print!("\rProcessed: {}/{}", total_hosts, total_targets);
             let _ = std::io::stdout().flush();
         }
@@ -232,8 +250,11 @@ async fn run(running: Arc<AtomicUsize>, abort_handle: Arc<Mutex<Option<tokio::ta
 
     if args.bar {
         monitor_done.store(true, Ordering::SeqCst);
-        // Ensure final status is shown
-        println!();
+        if let Some(ref pb) = progress_bar {
+            pb.finish_with_message("Done");
+        } else {
+            println!();
+        }
     }
 
     // Wait for scan task to complete (should be done since channel is closed)
