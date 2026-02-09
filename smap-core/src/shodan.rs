@@ -31,7 +31,9 @@ use crate::types::{Port, Protocol, ScanResult};
 use reqwest::{Client, StatusCode};
 use serde::{Deserialize, Serialize};
 use std::net::IpAddr;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::sync::Arc;
+use std::sync::atomic::AtomicU64;
 use tokio::time::sleep;
 
 const INTERNETDB_API_BASE: &str = "https://internetdb.shodan.io";
@@ -194,7 +196,16 @@ impl ShodanClient {
     /// # Ok(())
     /// # }
     /// ```
-    pub async fn query(&self, ip: IpAddr) -> Result<InternetDbResponse> {
+    /// Queries the InternetDB API and optionally notifies a retry deadline
+    ///
+    /// If `retry_deadline_ms` is provided, the client will update it whenever
+    /// a rate limit is observed (using the Retry-After header) so callers can
+    /// show an accurate countdown.
+    pub async fn query_with_retry_notifier(
+        &self,
+        ip: IpAddr,
+        retry_deadline_ms: Option<Arc<std::sync::atomic::AtomicU64>>,
+    ) -> Result<InternetDbResponse> {
         let url = format!("{}/{}", INTERNETDB_API_BASE, ip);
 
         let mut last_error = None;
@@ -205,29 +216,82 @@ impl ShodanClient {
                 // Use Retry-After if available, otherwise use exponential backoff
                 let delay = if let Some(retry_secs) = retry_after_secs.take() {
                     // Use the Retry-After header value with a small buffer
-                    Duration::from_secs(retry_secs + 1)
+                    Duration::from_secs((retry_secs + 1) as u64)
                 } else {
                     // Exponential backoff: delay * 2^(attempt-1)
                     let backoff_multiplier = 1u32.checked_shl(attempt - 1).unwrap_or(8);
                     self.retry_delay.saturating_mul(backoff_multiplier)
                 };
+
+                // Compute and publish a retry deadline so callers can show an accurate countdown
+                if let Some(ref rd) = retry_deadline_ms {
+                    let now_ms = SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .unwrap()
+                        .as_millis() as u64;
+                    let delay_ms = delay.as_millis() as u64;
+                    rd.store(now_ms.saturating_add(delay_ms), std::sync::atomic::Ordering::SeqCst);
+                }
+
                 sleep(delay).await;
             }
 
             match self.query_once(&url).await {
-                Ok(response) => return Ok(response),
+                Ok(response) => {
+                    // Clear any retry deadline on success
+                    if let Some(ref rd) = retry_deadline_ms {
+                        rd.store(0u64, std::sync::atomic::Ordering::SeqCst);
+                    }
+                    return Ok(response);
+                }
                 Err(e) => {
                     // Check if we should store a Retry-After delay for rate limiting
                     if let Error::ShodanApiRateLimit(ref _msg, retry_secs) = e {
                         // Store retry_after for next attempt (will be used at top of loop)
-                        retry_after_secs = retry_secs;
+                        // If server provided a Retry-After we use it; otherwise fall back
+                        // to our configured retry_delay so callers can show an immediate
+                        // "rate-limited" countdown.
+                        if let Some(retry_secs_val) = retry_secs {
+                            retry_after_secs = Some(retry_secs_val);
+                            let deadline: u64 = SystemTime::now()
+                                .duration_since(UNIX_EPOCH)
+                                .unwrap()
+                                .as_millis() as u64
+                                + (retry_secs_val as u64) * 1000u64;
+                            if let Some(ref rd) = retry_deadline_ms {
+                                rd.store(deadline, std::sync::atomic::Ordering::SeqCst);
+                            }
+                        } else {
+                            // No Retry-After header: use default retry delay as an immediate
+                            // deadline so the UI shows rate-limited now.
+                            let fallback_secs = self.retry_delay.as_secs();
+                            retry_after_secs = Some(fallback_secs);
+                            let deadline: u64 = SystemTime::now()
+                                .duration_since(UNIX_EPOCH)
+                                .unwrap()
+                                .as_millis() as u64
+                                + (fallback_secs as u64) * 1000u64;
+                            if let Some(ref rd) = retry_deadline_ms {
+                                rd.store(deadline, std::sync::atomic::Ordering::SeqCst);
+                            }
+                        }
                     }
                     last_error = Some(e);
                 }
             }
         }
 
+        // Clear any retry deadline when giving up
+        if let Some(ref rd) = retry_deadline_ms {
+            rd.store(0u64, std::sync::atomic::Ordering::SeqCst);
+        }
+
         Err(last_error.unwrap_or_else(|| Error::Generic("Unknown error".into())))
+    }
+
+    /// Backwards-compatible query method without notifier
+    pub async fn query(&self, ip: IpAddr) -> Result<InternetDbResponse> {
+        self.query_with_retry_notifier(ip, None).await
     }
 
     /// Performs a single query attempt without retries
