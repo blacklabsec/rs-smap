@@ -24,7 +24,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 use tokio::sync::Semaphore;
+use tokio::sync::mpsc;
 use tokio::time::sleep;
+use indicatif::{ProgressBar, ProgressStyle};
 
 /// Maximum concurrent scans (3 concurrent queries as per Go implementation)
 const MAX_CONCURRENT_SCANS: usize = 3;
@@ -128,19 +130,63 @@ async fn run(running: Arc<AtomicUsize>) -> anyhow::Result<()> {
     // Initialize output formatters
     let mut formatters = OutputFormatters::new(&args, scan_start_time)?;
 
-    // Scanning orchestration with rate limiting
-    let results = scan_targets(filtered_ips, client, port_filter, args.verbose, running).await?;
+    // Setup progress bar if requested
+    let pb = if args.bar {
+        let pb = ProgressBar::new(filtered_ips.len() as u64);
+        pb.set_style(ProgressStyle::default_bar()
+            .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({eta})")
+            .unwrap()
+            .progress_chars("#>-"));
+        Some(pb)
+    } else {
+        None
+    };
+
+    // Create channel for streaming results
+    let (tx, mut rx) = mpsc::channel(100);
+
+    // Spawn scanning task
+    let scan_handle = tokio::spawn(scan_targets(
+        filtered_ips,
+        client,
+        port_filter,
+        args.verbose,
+        running,
+        tx,
+    ));
+
+    // Process results as they come in
+    let mut total_hosts = 0;
+    let mut alive_hosts = 0;
+    let mut scan_results = Vec::new();
+
+    while let Some(result) = rx.recv().await {
+        total_hosts += 1;
+        if result.has_open_ports() {
+            alive_hosts += 1;
+        }
+
+        let scan_end_time = SystemTime::now();
+        formatters.write_result(&result, scan_end_time)?;
+        scan_results.push(result);
+
+        if let Some(ref pb) = pb {
+            pb.inc(1);
+        }
+    }
+
+    // Wait for scan task to complete (should be done since channel is closed)
+    if let Err(e) = scan_handle.await? {
+        eprintln!("Scan error: {}", e);
+    }
+
+    if let Some(ref pb) = pb {
+        pb.finish_with_message("Done");
+    }
 
     let scan_end_time = SystemTime::now();
 
-    // Write results to output formatters
-    for result in &results {
-        formatters.write_result(result, scan_end_time)?;
-    }
-
     // Finalize output
-    let total_hosts = results.len();
-    let alive_hosts = results.iter().filter(|r| r.has_open_ports()).count();
     let args_vec: Vec<String> = env::args().collect();
     formatters.finalize(scan_end_time, total_hosts, alive_hosts, &args_vec)?;
 
@@ -151,8 +197,8 @@ async fn run(running: Arc<AtomicUsize>) -> anyhow::Result<()> {
             .unwrap_or(Duration::from_secs(0));
         println!(
             "Smap done: {} IP addresses ({} hosts up) scanned in {:.2} seconds",
-            results.len(),
-            results.iter().filter(|r| r.has_open_ports()).count(),
+            total_hosts,
+            alive_hosts,
             duration.as_secs_f64()
         );
     }
@@ -280,7 +326,8 @@ async fn scan_targets(
     port_filter: Option<HashSet<u16>>,
     verbose: bool,
     running: Arc<AtomicUsize>,
-) -> anyhow::Result<Vec<ScanResult>> {
+    tx: mpsc::Sender<ScanResult>,
+) -> anyhow::Result<()> {
     let total = targets.len();
     let scanned = Arc::new(AtomicUsize::new(0));
     let hosts_up = Arc::new(AtomicUsize::new(0));
@@ -302,6 +349,7 @@ async fn scan_targets(
         let hosts_up = Arc::clone(&hosts_up);
         let semaphore = Arc::clone(&semaphore);
         let running = Arc::clone(&running);
+        let tx = tx.clone();
 
         let task = tokio::spawn(async move {
             // Acquire semaphore permit
@@ -384,18 +432,19 @@ async fn scan_targets(
                 hosts_up.fetch_add(1, Ordering::SeqCst);
             }
 
-            Some(result)
+            if let Err(e) = tx.send(result).await {
+                eprintln!("Error sending result: {}", e);
+            }
+
+            Some(())
         });
 
         tasks.push(task);
     }
 
-    // Collect results
-    let mut results = Vec::new();
+    // Wait for all tasks to complete
     for task in tasks {
-        if let Ok(Some(result)) = task.await {
-            results.push(result);
-        }
+        let _ = task.await;
     }
 
     if verbose {
@@ -407,7 +456,7 @@ async fn scan_targets(
         );
     }
 
-    Ok(results)
+    Ok(())
 }
 
 /// Output formatters manager

@@ -277,6 +277,9 @@ pub struct SmapArgs {
     // ===== TARGET LIST =====
     /// Target hosts/networks (positional arguments)
     pub targets: Vec<String>,
+
+    /// Show progress bar (--bar)
+    pub bar: bool,
 }
 
 impl SmapArgs {
@@ -499,7 +502,10 @@ impl SmapArgs {
             // Misc
             "6" | "A" | "datadir" | "send-eth" | "send-ip" | "privileged" | "unprivileged" |
             // Help/version
-            "V" | "h" | "help"
+            "V" | "h" | "help" |
+            
+            // Progress
+            "bar"
         )
     }
 
@@ -511,6 +517,9 @@ impl SmapArgs {
             "iR" => args.random_targets = value,
             "exclude" => args.exclude = value,
             "excludefile" => args.exclude_file = value.map(PathBuf::from),
+
+            // Progress
+            "bar" => args.bar = true,
 
             // Host discovery
             "sL" => args.list_scan = true,
