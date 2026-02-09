@@ -17,7 +17,7 @@ use smap_core::{
 use std::collections::HashSet;
 use std::env;
 use std::fs::File;
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Write};
 use std::net::IpAddr;
 use std::process;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -27,7 +27,6 @@ use std::time::{Duration, SystemTime};
 use tokio::sync::Semaphore;
 use tokio::sync::mpsc;
 use tokio::time::sleep;
-use indicatif::{ProgressBar, ProgressStyle};
 
 /// Maximum concurrent scans (3 concurrent queries as per Go implementation)
 const MAX_CONCURRENT_SCANS: usize = 3;
@@ -141,18 +140,10 @@ async fn run(running: Arc<AtomicUsize>, abort_handle: Arc<Mutex<Option<tokio::ta
     // Initialize output formatters
     let mut formatters = OutputFormatters::new(&args, scan_start_time)?;
 
-    // Setup progress bar if requested
-    let pb = if args.bar {
-        let pb = ProgressBar::new(filtered_ips.len() as u64);
-        pb.set_style(ProgressStyle::default_bar());
-        pb.set_draw_target(indicatif::ProgressDrawTarget::stdout());
-        Some(pb)
-    } else {
-        None
-    };
-
     // Create channel for streaming results
     let (tx, mut rx) = mpsc::channel(100);
+
+    let total_targets = filtered_ips.len();
 
     // Spawn scanning task
     let scan_handle = tokio::spawn(scan_targets(
@@ -170,32 +161,23 @@ async fn run(running: Arc<AtomicUsize>, abort_handle: Arc<Mutex<Option<tokio::ta
     let mut total_hosts = 0;
     let mut alive_hosts = 0;
 
-    // Process results with optional progress bar
-    match pb {
-        Some(ref progress) => {
-            while let Some(result) = rx.recv().await {
-                total_hosts += 1;
-                if result.has_open_ports() {
-                    alive_hosts += 1;
-                }
-
-                let result_time = SystemTime::now();
-                formatters.write_result(&result, result_time)?;
-                progress.inc(1);
-            }
-            progress.finish_with_message("Done");
+    while let Some(result) = rx.recv().await {
+        total_hosts += 1;
+        if result.has_open_ports() {
+            alive_hosts += 1;
         }
-        None => {
-            while let Some(result) = rx.recv().await {
-                total_hosts += 1;
-                if result.has_open_ports() {
-                    alive_hosts += 1;
-                }
 
-                let result_time = SystemTime::now();
-                formatters.write_result(&result, result_time)?;
-            }
+        let result_time = SystemTime::now();
+        formatters.write_result(&result, result_time)?;
+
+        if args.bar {
+            print!("\rProcessed: {}/{}", total_hosts, total_targets);
+            std::io::Write::flush(&mut std::io::stdout())?;
         }
+    }
+
+    if args.bar {
+        println!();
     }
 
     // Wait for scan task to complete (should be done since channel is closed)
