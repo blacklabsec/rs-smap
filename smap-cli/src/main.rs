@@ -20,10 +20,10 @@ use std::fs::File;
 use std::io::{BufRead, BufReader, Write};
 use std::net::IpAddr;
 use std::process;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::sync::Mutex;
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::sync::Semaphore;
 use tokio::sync::mpsc;
 use tokio::time::sleep;
@@ -145,6 +145,16 @@ async fn run(running: Arc<AtomicUsize>, abort_handle: Arc<Mutex<Option<tokio::ta
 
     let total_targets = filtered_ips.len();
 
+    // Start light-weight progress/stall monitoring (used when --bar is set)
+    let processed_count = Arc::new(AtomicUsize::new(0));
+    let last_progress = Arc::new(AtomicU64::new(
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64,
+    ));
+    let monitor_done = Arc::new(AtomicBool::new(false));
+
     // Spawn scanning task
     let scan_handle = tokio::spawn(scan_targets(
         filtered_ips,
@@ -157,12 +167,55 @@ async fn run(running: Arc<AtomicUsize>, abort_handle: Arc<Mutex<Option<tokio::ta
 
     *abort_handle.lock().unwrap() = Some(scan_handle.abort_handle());
 
+    // Spawn monitor task that prints stall/waiting info every second when --bar
+    if args.bar {
+        let pc = Arc::clone(&processed_count);
+        let lp = Arc::clone(&last_progress);
+        let done = Arc::clone(&monitor_done);
+        let total = total_targets;
+        tokio::spawn(async move {
+            const THRESH_MS: u64 = 5_000; // 5 seconds
+            loop {
+                if done.load(Ordering::SeqCst) {
+                    break;
+                }
+                let now_ms = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap()
+                    .as_millis() as u64;
+                let last = lp.load(Ordering::SeqCst);
+                let elapsed = now_ms.saturating_sub(last);
+                let processed = pc.load(Ordering::SeqCst);
+
+                if elapsed >= THRESH_MS {
+                    eprint!(
+                        "\rProcessed: {}/{} - waiting: {}s...",
+                        processed,
+                        total,
+                        elapsed / 1000
+                    );
+                } else {
+                    eprint!("\rProcessed: {}/{}        ", processed, total);
+                }
+                let _ = std::io::stderr().flush();
+                tokio::time::sleep(Duration::from_secs(1)).await;
+            }
+        });
+    }
+
     // Process results as they come in
     let mut total_hosts = 0;
     let mut alive_hosts = 0;
 
     while let Some(result) = rx.recv().await {
         total_hosts += 1;
+        processed_count.fetch_add(1, Ordering::SeqCst);
+        let now_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+        last_progress.store(now_ms, Ordering::SeqCst);
+
         if result.has_open_ports() {
             alive_hosts += 1;
         }
@@ -171,12 +224,15 @@ async fn run(running: Arc<AtomicUsize>, abort_handle: Arc<Mutex<Option<tokio::ta
         formatters.write_result(&result, result_time)?;
 
         if args.bar {
+            // Also print a short status to stdout for compatibility
             print!("\rProcessed: {}/{}", total_hosts, total_targets);
-            std::io::Write::flush(&mut std::io::stdout())?;
+            let _ = std::io::stdout().flush();
         }
     }
 
     if args.bar {
+        monitor_done.store(true, Ordering::SeqCst);
+        // Ensure final status is shown
         println!();
     }
 
