@@ -17,7 +17,7 @@ fn main() {
     }
     println!();
 
-    let (result, os) = correlate(&ports, &cpes);
+    let (result, os, _) = correlate(&ports, &cpes);
 
     println!("Results:");
     for r in &result {

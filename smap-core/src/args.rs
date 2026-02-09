@@ -278,7 +278,11 @@ pub struct SmapArgs {
     /// Target hosts/networks (positional arguments)
     pub targets: Vec<String>,
 
-    /// Show progress bar (--bar)
+    // ===== OUTPUT OPTIONS =====
+    /// Show progress bar during scanning (--bar)
+    ///
+    /// Displays a visual progress indicator showing scan progress,
+    /// estimated time remaining, and completion percentage.
     pub bar: bool,
 }
 

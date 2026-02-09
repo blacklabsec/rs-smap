@@ -16,7 +16,7 @@ fn test_real_world_ssh_apache_mysql() {
         "cpe:/o:canonical:ubuntu_linux:16.04".to_string(),
     ];
 
-    let (result, os) = correlate(&ports, &cpes);
+    let (result, os, _uncorrelated_cpes) = correlate(&ports, &cpes);
 
     // Debug output
     eprintln!("Results:");
@@ -77,7 +77,7 @@ fn test_ssl_https_detection() {
     let ports = vec![443];
     let cpes = vec!["cpe:/a:apache:http_server:2.4.29".to_string()];
 
-    let (result, _) = correlate(&ports, &cpes);
+    let (result, _, _) = correlate(&ports, &cpes);
 
     assert_eq!(result.len(), 1);
     assert_eq!(result[0].port, 443);
@@ -93,7 +93,7 @@ fn test_multiple_ssh_ports() {
     let ports = vec![22, 2222];
     let cpes = vec!["cpe:/a:openbsd:openssh:8.2p1".to_string()];
 
-    let (result, _) = correlate(&ports, &cpes);
+    let (result, _, _) = correlate(&ports, &cpes);
 
     assert_eq!(result.len(), 2);
 
@@ -108,7 +108,7 @@ fn test_complex_versioning() {
     let ports = vec![22];
     let cpes = vec!["cpe:/a:openbsd:openssh:7.4:p1:ubuntu".to_string()];
 
-    let (result, _) = correlate(&ports, &cpes);
+    let (result, _, _) = correlate(&ports, &cpes);
 
     assert_eq!(result.len(), 1);
     if result[0].service == "ssh" {
@@ -123,7 +123,7 @@ fn test_no_matches_all_orphans() {
     let ports = vec![9999, 10000, 10001];
     let cpes = vec!["cpe:/a:unknown:vendor:1.0".to_string()];
 
-    let (result, _) = correlate(&ports, &cpes);
+    let (result, _, _) = correlate(&ports, &cpes);
 
     assert_eq!(result.len(), 3);
 
@@ -144,7 +144,7 @@ fn test_scoring_preference() {
         "cpe:/a:nginx:nginx:1.14.0".to_string(),
     ];
 
-    let (result, _) = correlate(&ports, &cpes);
+    let (result, _, _) = correlate(&ports, &cpes);
 
     assert_eq!(result.len(), 1);
     assert_eq!(result[0].port, 80);
@@ -158,7 +158,7 @@ fn test_empty_cpe_list() {
     let ports = vec![80, 443, 22];
     let cpes = vec![];
 
-    let (result, _) = correlate(&ports, &cpes);
+    let (result, _, _) = correlate(&ports, &cpes);
 
     assert_eq!(result.len(), 3);
 
@@ -174,7 +174,7 @@ fn test_cpe_reuse_prevention() {
     let ports = vec![80, 8080];
     let cpes = vec!["cpe:/a:apache:http_server:2.4.6".to_string()];
 
-    let (result, _) = correlate(&ports, &cpes);
+    let (result, _, _) = correlate(&ports, &cpes);
 
     assert_eq!(result.len(), 2);
 
@@ -197,7 +197,7 @@ fn test_protocol_consistency() {
         "cpe:/a:apache:http_server:2.4.6".to_string(),
     ];
 
-    let (result, _) = correlate(&ports, &cpes);
+    let (result, _, _) = correlate(&ports, &cpes);
 
     assert_eq!(result.len(), 5);
 
@@ -229,7 +229,7 @@ fn test_performance_realistic_scan() {
     let _ = correlate(&[22], &[]);
 
     let start = std::time::Instant::now();
-    let (result, _) = correlate(&ports, &cpes);
+    let (result, _, _) = correlate(&ports, &cpes);
     let duration = start.elapsed();
 
     assert_eq!(result.len(), 20);
@@ -250,8 +250,8 @@ fn test_deterministic_results() {
         "cpe:/a:apache:http_server:2.4.6".to_string(),
     ];
 
-    let (result1, os1) = correlate(&ports, &cpes);
-    let (result2, os2) = correlate(&ports, &cpes);
+    let (result1, os1, _) = correlate(&ports, &cpes);
+    let (result2, os2, _) = correlate(&ports, &cpes);
 
     // Results should be identical
     assert_eq!(result1.len(), result2.len());

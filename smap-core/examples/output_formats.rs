@@ -38,6 +38,7 @@ fn create_sample_results() -> Vec<ScanResult> {
                     }),
                 },
             ],
+            cpes: vec![],
             os: Some(OsInfo::with_cpes(
                 "Linux".to_string(),
                 vec!["cpe:/o:linux:linux_kernel".to_string()],
@@ -59,6 +60,7 @@ fn create_sample_results() -> Vec<ScanResult> {
                     cpes: vec!["cpe:/a:nginx:nginx:1.18.0".to_string()],
                 }),
             }],
+            cpes: vec![],
             os: None,
             hostnames: vec!["server2.example.com".to_string()],
             tags: vec![],

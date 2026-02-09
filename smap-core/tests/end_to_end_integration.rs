@@ -36,7 +36,7 @@ fn test_complete_correlation_workflow() {
         "cpe:/o:canonical:ubuntu_linux:20.04".to_string(),
     ];
 
-    let (correlated_ports, _os_info) = correlate(&ports, &cpes);
+    let (correlated_ports, _os_info, _uncorrelated_cpes) = correlate(&ports, &cpes);
 
     // Verify correlation results
     assert_eq!(correlated_ports.len(), ports.len());
@@ -108,6 +108,7 @@ fn test_ipv6_support() {
                 cpes: vec![],
             }),
         }],
+        cpes: vec![],
         os: None,
         hostnames: vec!["google-public-dns-a.google.com".to_string()],
         tags: vec![],
@@ -151,6 +152,7 @@ fn test_large_port_list_handling() {
     let result = ScanResult {
         ip,
         ports,
+        cpes: vec![],
         os: None,
         hostnames: vec![],
         tags: vec![],
@@ -234,6 +236,7 @@ fn test_scan_result_with_os_info() {
     let result = ScanResult {
         ip,
         ports: vec![],
+        cpes: vec![],
         os: Some(OsInfo::new("Linux 4.15")),
         hostnames: vec![],
         tags: vec![],
@@ -250,6 +253,7 @@ fn test_scan_result_with_tags() {
     let result = ScanResult {
         ip,
         ports: vec![],
+        cpes: vec![],
         os: None,
         hostnames: vec![],
         tags: vec!["cloud".to_string(), "dns".to_string()],
@@ -279,6 +283,7 @@ fn test_scan_result_serialization() {
                 cpes: vec![],
             }),
         }],
+        cpes: vec![],
         os: None,
         hostnames: vec!["test.local".to_string()],
         tags: vec![],
@@ -302,8 +307,8 @@ fn test_correlation_determinism() {
         "cpe:/a:apache:http_server:2.4.6".to_string(),
     ];
 
-    let (result1, _os1) = correlate(&ports, &cpes);
-    let (result2, _os2) = correlate(&ports, &cpes);
+    let (result1, _os1, _) = correlate(&ports, &cpes);
+    let (result2, _os2, _) = correlate(&ports, &cpes);
 
     assert_eq!(result1.len(), result2.len());
     for (p1, p2) in result1.iter().zip(result2.iter()) {
@@ -319,7 +324,7 @@ fn test_correlation_preserves_all_ports() {
     let ports = vec![21, 22, 23, 25, 53, 80, 110, 143, 443, 3306, 5432];
     let cpes = vec![];
 
-    let (result, _os) = correlate(&ports, &cpes);
+    let (result, _os, _) = correlate(&ports, &cpes);
 
     assert_eq!(result.len(), ports.len(), "All ports should be in output");
 
@@ -338,7 +343,7 @@ fn test_correlation_port_ordering() {
     let ports = vec![443, 22, 3306, 80, 21];
     let cpes = vec![];
 
-    let (result, _os) = correlate(&ports, &cpes);
+    let (result, _os, _) = correlate(&ports, &cpes);
 
     // Just verify all ports are present
     assert_eq!(result.len(), ports.len());
@@ -354,11 +359,11 @@ fn test_correlation_port_ordering() {
 #[test]
 fn test_correlation_with_empty_inputs() {
     // Empty ports
-    let (result, _os) = correlate(&[], &["cpe:/a:test:test:1.0".to_string()]);
+    let (result, _os, _) = correlate(&[], &["cpe:/a:test:test:1.0".to_string()]);
     assert!(result.is_empty());
 
     // Empty CPEs
-    let (result, _os) = correlate(&[80], &[]);
+    let (result, _os, _) = correlate(&[80], &[]);
     assert_eq!(result.len(), 1);
     assert_eq!(result[0].port, 80);
 }
@@ -369,6 +374,7 @@ fn test_multiple_hostnames() {
     let result = ScanResult {
         ip,
         ports: vec![],
+        cpes: vec![],
         os: None,
         hostnames: vec![
             "one.one.one.one".to_string(),
@@ -387,6 +393,7 @@ fn test_multiple_vulns() {
     let result = ScanResult {
         ip,
         ports: vec![],
+        cpes: vec![],
         os: None,
         hostnames: vec![],
         tags: vec![],

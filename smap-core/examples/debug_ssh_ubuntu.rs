@@ -12,7 +12,7 @@ fn main() {
     println!("Testing with CPEs: {:?}", cpes);
     println!();
 
-    let (result, os) = correlate(&ports, &cpes);
+    let (result, os, _uncorrelated_cpes) = correlate(&ports, &cpes);
 
     println!("Results:");
     for r in &result {

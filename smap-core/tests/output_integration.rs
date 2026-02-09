@@ -45,8 +45,7 @@ fn create_sample_result() -> ScanResult {
                     cpes: vec!["cpe:/a:apache:http_server:2.4.6".to_string()],
                 }),
             },
-        ],
-        os: Some(OsInfo::with_cpes(
+        ],        cpes: vec![],        os: Some(OsInfo::with_cpes(
             "Linux".to_string(),
             vec!["cpe:/o:linux:linux_kernel".to_string()],
         )),
@@ -148,6 +147,7 @@ fn test_nmap_formatter_empty_result() {
     let empty_result = ScanResult {
         ip: "192.168.1.100".parse::<IpAddr>().unwrap(),
         ports: vec![],
+        cpes: vec![],
         os: None,
         hostnames: vec![],
         tags: vec![],
@@ -181,6 +181,7 @@ fn test_json_formatter_multiple_results() {
                 cpes: vec![],
             }),
         }],
+        cpes: vec![],
         os: None,
         hostnames: vec![],
         tags: vec![],
@@ -209,6 +210,7 @@ fn test_grep_formatter_no_hostname() {
                 cpes: vec![],
             }),
         }],
+        cpes: vec![],
         os: None,
         hostnames: vec![],
         tags: vec![],

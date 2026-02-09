@@ -135,7 +135,7 @@ async fn run(running: Arc<AtomicUsize>) -> anyhow::Result<()> {
         let pb = ProgressBar::new(filtered_ips.len() as u64);
         pb.set_style(ProgressStyle::default_bar()
             .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({eta})")
-            .unwrap()
+            .map_err(|e| anyhow::anyhow!("Invalid progress bar template: {}", e))?
             .progress_chars("#>-"));
         Some(pb)
     } else {
@@ -158,30 +158,40 @@ async fn run(running: Arc<AtomicUsize>) -> anyhow::Result<()> {
     // Process results as they come in
     let mut total_hosts = 0;
     let mut alive_hosts = 0;
-    let mut scan_results = Vec::new();
 
-    while let Some(result) = rx.recv().await {
-        total_hosts += 1;
-        if result.has_open_ports() {
-            alive_hosts += 1;
+    // Process results with optional progress bar
+    match pb {
+        Some(ref progress) => {
+            while let Some(result) = rx.recv().await {
+                total_hosts += 1;
+                if result.has_open_ports() {
+                    alive_hosts += 1;
+                }
+
+                let result_time = SystemTime::now();
+                formatters.write_result(&result, result_time)?;
+                progress.inc(1);
+            }
+            progress.finish_with_message("Done");
         }
+        None => {
+            while let Some(result) = rx.recv().await {
+                total_hosts += 1;
+                if result.has_open_ports() {
+                    alive_hosts += 1;
+                }
 
-        let scan_end_time = SystemTime::now();
-        formatters.write_result(&result, scan_end_time)?;
-        scan_results.push(result);
-
-        if let Some(ref pb) = pb {
-            pb.inc(1);
+                let result_time = SystemTime::now();
+                formatters.write_result(&result, result_time)?;
+            }
         }
     }
 
     // Wait for scan task to complete (should be done since channel is closed)
-    if let Err(e) = scan_handle.await? {
-        eprintln!("Scan error: {}", e);
-    }
-
-    if let Some(ref pb) = pb {
-        pb.finish_with_message("Done");
+    match scan_handle.await {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => eprintln!("Scan error: {}", e),
+        Err(e) => eprintln!("Task join error: {}", e),
     }
 
     let scan_end_time = SystemTime::now();
@@ -368,13 +378,36 @@ async fn scan_targets(
                 Ok(resp) => resp,
                 Err(_) => {
                     scanned.fetch_add(1, Ordering::SeqCst);
+                    // Send empty result for progress tracking
+                    let empty_result = ScanResult {
+                        ip,
+                        ports: Vec::new(),
+                        cpes: Vec::new(),
+                        os: None,
+                        hostnames: Vec::new(),
+                        tags: Vec::new(),
+                        vulns: Vec::new(),
+                    };
+                    let _ = tx.send(empty_result).await;
                     return None;
                 }
             };
 
-            // Check if response has any data
-            if response.ports.is_empty() {
+            // Create result even if no ports (for progress tracking)
+            let has_ports = !response.ports.is_empty();
+            if !has_ports {
                 scanned.fetch_add(1, Ordering::SeqCst);
+                // Send empty result for progress tracking
+                let empty_result = ScanResult {
+                    ip,
+                    ports: Vec::new(),
+                    cpes: Vec::new(),
+                    os: None,
+                    hostnames: Vec::new(),
+                    tags: Vec::new(),
+                    vulns: Vec::new(),
+                };
+                let _ = tx.send(empty_result).await;
                 return None;
             }
 
@@ -432,15 +465,18 @@ async fn scan_targets(
                 hosts_up.fetch_add(1, Ordering::SeqCst);
             }
 
-            if let Err(e) = tx.send(result).await {
-                eprintln!("Error sending result: {}", e);
-            }
+            // Send result - ignore send errors as they indicate receiver dropped
+            // (e.g., user interrupted the scan)
+            let _ = tx.send(result).await;
 
             Some(())
         });
 
         tasks.push(task);
     }
+
+    // Drop the original sender so receiver knows when all tasks are done
+    drop(tx);
 
     // Wait for all tasks to complete
     for task in tasks {
