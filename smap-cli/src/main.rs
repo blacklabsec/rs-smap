@@ -145,6 +145,7 @@ async fn run(running: Arc<AtomicUsize>, abort_handle: Arc<Mutex<Option<tokio::ta
     let pb = if args.bar {
         let pb = ProgressBar::new(filtered_ips.len() as u64);
         pb.set_style(ProgressStyle::default_bar());
+        pb.set_draw_target(indicatif::ProgressDrawTarget::stdout());
         Some(pb)
     } else {
         None
