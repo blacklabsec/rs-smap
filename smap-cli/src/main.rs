@@ -464,6 +464,41 @@ async fn scan_targets(
                     if verbose {
                         eprintln!("Failed to query {}: {}", ip, e);
                     }
+
+                    // If rate-limited, print an explicit message with countdown immediately (visible without -v)
+                    if let smap_core::error::Error::ShodanApiRateLimit(_, _) = e {
+                        let rd_val = rd.load(Ordering::SeqCst);
+                        if rd_val > 0 {
+                            let now_ms = SystemTime::now()
+                                .duration_since(UNIX_EPOCH)
+                                .unwrap()
+                                .as_millis() as u64;
+                            if rd_val > now_ms {
+                                let secs_left = ((rd_val.saturating_sub(now_ms)) + 999) / 1000; // ceil
+                                eprintln!("Rate limited: retry in {}s", secs_left);
+                            } else {
+                                eprintln!("Rate limited: retry deadline has passed");
+                            }
+                        } else {
+                            eprintln!("Rate limited");
+                        }
+
+                        // Also print more detail when verbose
+                        if verbose {
+                            let rd_val = rd.load(Ordering::SeqCst);
+                            if rd_val > 0 {
+                                let now_ms = SystemTime::now()
+                                    .duration_since(UNIX_EPOCH)
+                                    .unwrap()
+                                    .as_millis() as u64;
+                                if rd_val > now_ms {
+                                    let secs_left = ((rd_val.saturating_sub(now_ms)) + 999) / 1000; // ceil
+                                    eprintln!("(verbose) Shodan rate-limited: retry in {}s", secs_left);
+                                }
+                            }
+                        }
+                    }
+
                     // If this was a final rate-limit with a known deadline, leave the
                     // retry deadline set so the monitor can show it; otherwise clear it.
                     match e {
