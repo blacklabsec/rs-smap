@@ -146,10 +146,7 @@ async fn run(running: Arc<AtomicUsize>, abort_handle: Arc<Mutex<Option<tokio::ta
     // Setup progress bar if requested
     let pb = if args.bar {
         let pb = ProgressBar::new(filtered_ips.len() as u64);
-        pb.set_style(ProgressStyle::default_bar()
-            .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({eta})")
-            .map_err(|e| anyhow::anyhow!("Invalid progress bar template: {}", e))?
-            .progress_chars("#>-"));
+        pb.set_style(ProgressStyle::default_bar());
         Some(pb)
     } else {
         None

@@ -18849,3 +18849,4 @@ PORT     STATE   SERVICE  VERSION
 80/tcp   open    http?    
 443/tcp  open    https?   
 
+# Starting Nmap 9.99 ( https://nmap.org ) at Sun Feb 08 23:02:15 2026 as: smap target/debug/smap -iL targets.txt -oA test --bar -v

@@ -877,3 +877,4 @@ Host: 35.201.102.157 (157.102.201.35.bc.googleusercontent.com) Ports: 80/open/tc
 Host: 129.176.0.27 ()    Status: Up
 Host: 129.176.4.84 ()    Status: Up
 Host: 129.176.3.60 ()    Status: Up
+# Nmap 9.99 scan initiated Sun Feb 08 23:02:15 2026 as: smap target/debug/smap -iL targets.txt -oA test --bar -v
