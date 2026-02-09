@@ -20,8 +20,9 @@ use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::net::IpAddr;
 use std::process;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::time::{Duration, SystemTime};
 use tokio::sync::Semaphore;
 use tokio::sync::mpsc;
@@ -35,25 +36,37 @@ const MAX_CONCURRENT_SCANS: usize = 3;
 /// With 3 concurrent connections, we can space requests to achieve this
 const RATE_LIMIT_DELAY_MS: u64 = 15; // ~66 requests/sec per connection = ~200/sec total
 
+static INTERRUPTED: AtomicBool = AtomicBool::new(false);
+
 #[tokio::main]
 async fn main() {
     // Setup Ctrl+C handler
     let running = Arc::new(AtomicUsize::new(1));
+    let abort_handle = Arc::new(Mutex::new(None::<tokio::task::AbortHandle>));
+    let abort_clone = Arc::clone(&abort_handle);
     let r = running.clone();
     ctrlc::set_handler(move || {
-        r.store(0, Ordering::SeqCst);
-        eprintln!("\nCaught interrupt signal, shutting down gracefully...");
+        if INTERRUPTED.swap(true, Ordering::SeqCst) {
+            eprintln!("\nForce exiting...");
+            process::exit(1);
+        } else {
+            r.store(0, Ordering::SeqCst);
+            eprintln!("\nCaught interrupt signal, shutting down gracefully...");
+            if let Some(handle) = abort_clone.lock().unwrap().take() {
+                handle.abort();
+            }
+        }
     })
     .expect("Error setting Ctrl-C handler");
 
-    if let Err(e) = run(running).await {
+    if let Err(e) = run(running, abort_handle).await {
         eprintln!("Error: {}", e);
         process::exit(1);
     }
 }
 
 /// Main application logic
-async fn run(running: Arc<AtomicUsize>) -> anyhow::Result<()> {
+async fn run(running: Arc<AtomicUsize>, abort_handle: Arc<Mutex<Option<tokio::task::AbortHandle>>>) -> anyhow::Result<()> {
     let scan_start_time = SystemTime::now();
 
     // Parse arguments using our custom Nmap-compatible parser
@@ -154,6 +167,8 @@ async fn run(running: Arc<AtomicUsize>) -> anyhow::Result<()> {
         running,
         tx,
     ));
+
+    *abort_handle.lock().unwrap() = Some(scan_handle.abort_handle());
 
     // Process results as they come in
     let mut total_hosts = 0;
